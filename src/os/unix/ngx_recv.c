@@ -111,6 +111,7 @@ ngx_unix_recv(ngx_connection_t *c, u_char *buf, size_t size)
                     rev->available = 0;
                 }
 
+                c->read_bytes += n;
                 return n;
             }
 
@@ -129,6 +130,7 @@ ngx_unix_recv(ngx_connection_t *c, u_char *buf, size_t size)
                     rev->available = 0;
                 }
 
+                c->read_bytes += n;
                 return n;
             }
 
@@ -140,6 +142,7 @@ ngx_unix_recv(ngx_connection_t *c, u_char *buf, size_t size)
                 rev->ready = 0;
             }
 
+            c->read_bytes += n;
             return n;
         }
 

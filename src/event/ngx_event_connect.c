@@ -71,6 +71,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
                           "setsockopt(SO_RCVBUF) failed");
             goto failed;
         }
+        mylog("setsockopt(%d, SO_RCVBUF, %d)\n", s, pc->rcvbuf);
     }
 
     if (ngx_nonblocking(s) == -1) {
@@ -190,6 +191,8 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
     ngx_log_debug3(NGX_LOG_DEBUG_EVENT, pc->log, 0,
                    "connect to %V, fd:%d #%uA", pc->name, s, c->number);
 
+    mylog("socket %d connecting...\n", (int)s);
+    upstream_socket = c;
     rc = connect(s, pc->sockaddr, pc->socklen);
 
     if (rc == -1) {

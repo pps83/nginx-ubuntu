@@ -123,6 +123,14 @@ static ngx_int_t ngx_http_upstream_process_limit_rate(ngx_http_request_t *r,
     ngx_table_elt_t *h, ngx_uint_t offset);
 static ngx_int_t ngx_http_upstream_process_buffering(ngx_http_request_t *r,
     ngx_table_elt_t *h, ngx_uint_t offset);
+static ngx_int_t ngx_http_upstream_process_up_sndbuf(ngx_http_request_t *r,
+    ngx_table_elt_t *h, ngx_uint_t offset);
+static ngx_int_t ngx_http_upstream_process_up_rcvbuf(ngx_http_request_t *r,
+    ngx_table_elt_t *h, ngx_uint_t offset);
+static ngx_int_t ngx_http_upstream_process_down_sndbuf(ngx_http_request_t *r,
+    ngx_table_elt_t *h, ngx_uint_t offset);
+static ngx_int_t ngx_http_upstream_process_down_rcvbuf(ngx_http_request_t *r,
+    ngx_table_elt_t *h, ngx_uint_t offset);
 static ngx_int_t ngx_http_upstream_process_charset(ngx_http_request_t *r,
     ngx_table_elt_t *h, ngx_uint_t offset);
 static ngx_int_t ngx_http_upstream_process_connection(ngx_http_request_t *r,
@@ -304,6 +312,22 @@ static ngx_http_upstream_header_t  ngx_http_upstream_headers_in[] = {
     { ngx_string("X-Accel-Buffering"),
                  ngx_http_upstream_process_buffering, 0,
                  ngx_http_upstream_copy_header_line, 0, 0 },
+
+    { ngx_string("X-Accel-Up-SNDBUF"),
+                 ngx_http_upstream_process_up_sndbuf, 0,
+                 ngx_http_upstream_ignore_header_line, 0, 0 },
+
+    { ngx_string("X-Accel-Up-RCVBUF"),
+                 ngx_http_upstream_process_up_rcvbuf, 0,
+                 ngx_http_upstream_ignore_header_line, 0, 0 },
+
+    { ngx_string("X-Accel-Down-SNDBUF"),
+                 ngx_http_upstream_process_down_sndbuf, 0,
+                 ngx_http_upstream_ignore_header_line, 0, 0 },
+
+    { ngx_string("X-Accel-Down-RCVBUF"),
+                 ngx_http_upstream_process_down_rcvbuf, 0,
+                 ngx_http_upstream_ignore_header_line, 0, 0 },
 
     { ngx_string("X-Accel-Charset"),
                  ngx_http_upstream_process_charset, 0,
@@ -4727,6 +4751,62 @@ ngx_http_upstream_process_buffering(ngx_http_request_t *r, ngx_table_elt_t *h,
         }
     }
 
+    return NGX_OK;
+}
+
+
+static void
+set_sockopt(ngx_socket_t fd, int opt, ngx_str_t value, ngx_log_t *log)
+{
+    int val = (int)ngx_atoi(value.data, value.len);
+    if (setsockopt(fd, SOL_SOCKET, opt, (const void *)&val, sizeof(int)) == -1)
+    {
+        ngx_log_error(NGX_LOG_ALERT, log, ngx_socket_errno,
+            "setsockopt(%s, %d) failed, ignored",
+            opt == SO_SNDBUF ? "SO_SNDBUF" : "SO_RCVBUF", val);
+    }
+    mylog("setsockopt(%d, %s, %d)\n", fd,
+        opt == SO_SNDBUF ? "SO_SNDBUF" : "SO_RCVBUF", val);
+}
+
+static ngx_int_t
+ngx_http_upstream_process_up_rcvbuf(ngx_http_request_t *r, ngx_table_elt_t *h,
+    ngx_uint_t offset)
+{
+    ngx_http_upstream_t  *u = r->upstream;
+    if (u->peer.connection)
+        set_sockopt(u->peer.connection->fd, SO_RCVBUF, h->value, u->peer.connection->log);
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_upstream_process_up_sndbuf(ngx_http_request_t *r, ngx_table_elt_t *h,
+    ngx_uint_t offset)
+{
+    ngx_http_upstream_t  *u = r->upstream;
+    if (u->peer.connection)
+        set_sockopt(u->peer.connection->fd, SO_SNDBUF, h->value, u->peer.connection->log);
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_upstream_process_down_rcvbuf(ngx_http_request_t *r, ngx_table_elt_t *h,
+    ngx_uint_t offset)
+{
+    if (r->connection)
+        set_sockopt(r->connection->fd, SO_RCVBUF, h->value, r->connection->log);
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_upstream_process_down_sndbuf(ngx_http_request_t *r, ngx_table_elt_t *h,
+    ngx_uint_t offset)
+{
+    if (r->connection)
+        set_sockopt(r->connection->fd, SO_SNDBUF, h->value, r->connection->log);
     return NGX_OK;
 }
 

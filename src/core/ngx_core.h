@@ -102,6 +102,9 @@ typedef void (*ngx_connection_handler_pt)(ngx_connection_t *c);
 
 void ngx_cpuinfo(void);
 
+int mylog(const char* fmt, ...);
+extern ngx_connection_t *accepted_socket, *upstream_socket;
+
 #if (NGX_HAVE_OPENAT)
 #define NGX_DISABLE_SYMLINKS_OFF        0
 #define NGX_DISABLE_SYMLINKS_ON         1

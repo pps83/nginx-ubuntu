@@ -233,6 +233,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 
             ls[i].rcvbuf = -1;
         }
+        mylog("getsockopt(%d, SO_RCVBUF) => %d\n", ls[i].fd, ls[i].rcvbuf);
 
         olen = sizeof(int);
 
@@ -246,6 +247,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 
             ls[i].sndbuf = -1;
         }
+        mylog("getsockopt(%d, SO_SNDBUF) => %d\n", ls[i].fd, ls[i].sndbuf);
 
 #if 0
         /* SO_SETFIB is currently a set only option */
@@ -588,6 +590,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 continue;
             }
 
+            mylog("listen(%d)\n", s);
             if (listen(s, ls[i].backlog) == -1) {
                 err = ngx_socket_errno;
 
@@ -671,6 +674,7 @@ ngx_configure_listening_sockets(ngx_cycle_t *cycle)
                               "setsockopt(SO_RCVBUF, %d) %V failed, ignored",
                               ls[i].rcvbuf, &ls[i].addr_text);
             }
+            mylog("setsockopt(%d, SO_RCVBUF, %d)\n", ls[i].fd, ls[i].rcvbuf);
         }
 
         if (ls[i].sndbuf != -1) {
@@ -682,6 +686,7 @@ ngx_configure_listening_sockets(ngx_cycle_t *cycle)
                               "setsockopt(SO_SNDBUF, %d) %V failed, ignored",
                               ls[i].sndbuf, &ls[i].addr_text);
             }
+            mylog("setsockopt(%d, SO_SNDBUF, %d)\n", ls[i].fd, ls[i].sndbuf);
         }
 
         if (ls[i].keepalive) {
@@ -1119,6 +1124,11 @@ ngx_close_connection(ngx_connection_t *c)
         ngx_log_error(NGX_LOG_ALERT, c->log, 0, "connection already closed");
         return;
     }
+    mylog("close_connection socket:%d sent:%d received:%d\n", c->fd, (int)c->sent, (int)c->read_bytes);
+    if (upstream_socket == c)
+        upstream_socket = NULL;
+    else if (accepted_socket == c)
+        accepted_socket = NULL;
 
     if (c->read->timer_set) {
         ngx_del_timer(c->read);

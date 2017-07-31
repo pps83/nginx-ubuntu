@@ -19,6 +19,254 @@ static void ngx_debug_accepted_connection(ngx_event_conf_t *ecf,
 #endif
 
 
+#ifndef _WIN32
+#include <linux/sockios.h>
+#define ioctlsocket ioctl
+uint64_t GetTickCount64(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now))
+        return 0;
+    return now.tv_sec * 1000LL + now.tv_nsec / 1000000;
+}
+
+//#if !(NGX_THREADS)
+#include <pthread.h>
+typedef void *  ngx_thread_value_t;
+typedef pthread_t ngx_tid_t2;
+ngx_err_t
+ngx_create_thread(ngx_tid_t2 *tid, ngx_thread_value_t(*func)(void *arg),
+    void *arg, ngx_log_t *log)
+{
+    static pthread_attr_t thr_attr;
+    pthread_attr_init(&thr_attr);
+    return pthread_create(tid, &thr_attr, func, arg);
+}
+//#endif
+
+#else
+typedef ngx_tid_t ngx_tid_t2;
+__declspec(dllimport) uint64_t __stdcall GetTickCount64(void);
+#endif
+
+int getOutQueue(int sock, int bodyReadSize)
+{
+    if (bodyReadSize == -1)
+        return -1;
+#ifndef _WIN32
+    unsigned long ret;
+    if (ioctlsocket(sock, SIOCOUTQ, &ret) < 0) {
+        mylog("ioctlsocket failed, errno:%d\n", ngx_socket_errno);
+        ret = -1;
+    }
+    return ret;
+#else
+#define SIO_TCP_INFO                        _WSAIORW(IOC_VENDOR,39)
+
+    typedef enum _TCPSTATE {
+        TCPSTATE_CLOSED,
+        TCPSTATE_LISTEN,
+        TCPSTATE_SYN_SENT,
+        TCPSTATE_SYN_RCVD,
+        TCPSTATE_ESTABLISHED,
+        TCPSTATE_FIN_WAIT_1,
+        TCPSTATE_FIN_WAIT_2,
+        TCPSTATE_CLOSE_WAIT,
+        TCPSTATE_CLOSING,
+        TCPSTATE_LAST_ACK,
+        TCPSTATE_TIME_WAIT,
+        TCPSTATE_MAX
+    } TCPSTATE;
+
+    typedef struct _TCP_INFO_v0 {
+        TCPSTATE State;
+        ULONG    Mss;
+        ULONG64  ConnectionTimeMs;
+        BOOLEAN  TimestampsEnabled;
+        ULONG    RttUs;
+        ULONG    MinRttUs;
+        ULONG    BytesInFlight;
+        ULONG    Cwnd;
+        ULONG    SndWnd;
+        ULONG    RcvWnd;
+        ULONG    RcvBuf;
+        ULONG64  BytesOut;
+        ULONG64  BytesIn;
+        ULONG    BytesReordered;
+        ULONG    BytesRetrans;
+        ULONG    FastRetrans;
+        ULONG    DupAcksIn;
+        ULONG    TimeoutEpisodes;
+        UCHAR    SynRetrans;
+    } TCP_INFO_v0, *PTCP_INFO_v0;
+
+    TCP_INFO_v0 info;
+    DWORD version = 0;
+    DWORD bytes_returned;
+    int ret;
+    ret = WSAIoctl(sock, SIO_TCP_INFO, &version, sizeof(version), &info, sizeof(info), &bytes_returned, 0, 0);
+    if (ret == SOCKET_ERROR)
+        return -1;
+    return (int)(bodyReadSize - info.BytesOut);
+#endif
+}
+
+int getFionread(int sock);
+int getInQueue(int sock)
+{
+#ifndef _WIN32
+    unsigned long ret;
+    if (ioctlsocket(sock, SIOCINQ, &ret) < 0) {
+        mylog("ioctlsocket failed, errno:%d\n", ngx_socket_errno);
+        ret = -1;
+    }
+    return ret;
+#else
+    return getFionread(sock);
+#endif
+}
+
+int getFionread(int sock)
+{
+    unsigned long ret;
+    if (ioctlsocket(sock, FIONREAD, &ret) < 0) {
+        mylog("ioctlsocket failed, errno:%d\n", ngx_socket_errno);
+        ret = -1;
+    }
+    return (int)ret;
+}
+
+int getSndbuf(int sock)
+{
+    int ret;
+    socklen_t len = sizeof(ret);
+    int err = getsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char*)&ret, &len);
+    if (err == -1) {
+        mylog("getsockopt failed, errno:%d\n", ngx_socket_errno);
+        ret = -1;
+    }
+    return ret;
+}
+
+int getRcvbuf(int sock)
+{
+    int ret;
+    socklen_t len = sizeof(ret);
+    int err = getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char*)&ret, &len);
+    if (err == -1) {
+        mylog("getsockopt failed, errno:%d\n", ngx_socket_errno);
+        ret = -1;
+    }
+    return ret;
+}
+
+char* getSockInfoOut(int sock, int bodyReadSize)
+{
+    static char ret[64];
+    sprintf(ret, "SND:%d OUTQ:%d", getSndbuf(sock), getOutQueue(sock, bodyReadSize));
+    return ret;
+}
+
+char* getSockInfoIn(int sock)
+{
+    static char ret[64];
+    int rcv = getRcvbuf(sock), inq = getInQueue(sock), fion = getFionread(sock);
+    int sz = sprintf(ret, "RCV:%d INQ:%d", rcv, inq);
+    if (inq != fion)
+        sprintf(ret + sz, " FIONREAD:%d", fion);
+    return ret;
+}
+
+
+void dolog();
+ngx_connection_t *accepted_socket = NULL, *upstream_socket = NULL;
+static ngx_tid_t2 log_thread = 0;
+static uint64_t tick0 = (uint64_t)-1;
+static volatile int insideLog = 0;
+static ngx_thread_value_t 
+#ifdef _WIN32
+__stdcall
+#endif
+ngx_log_thread(void *data)
+{
+    for (;;)
+    {
+        ngx_msleep(1000);
+        dolog();
+    }
+    return NULL;
+}
+
+static void start_dolog()
+{
+    if (log_thread == 0)
+    {
+        if (ngx_create_thread(&log_thread, ngx_log_thread, NULL, NULL) != 0) {
+            /* fatal */
+            exit(2);
+        }
+    }
+}
+
+#ifndef _WIN32
+static const char* myLog = "/usr/local/nginx/logs/xxxlog.txt";
+#else
+static const char* myLog = "xxxlog.txt";
+#endif
+
+int mylog(const char* fmt, ...)
+{
+    start_dolog();
+    if (fmt == strstr(fmt, "accept("))
+        tick0 = GetTickCount64();
+
+    dolog();
+
+    while (insideLog);
+    insideLog = 1;
+    uint64_t now = GetTickCount64();
+    if (tick0 == (uint64_t)-1)
+        tick0 = now;
+    now -= tick0;
+    FILE* fl = fopen(myLog, "ab");
+    if (fl)
+    {
+        fprintf(fl, "%5u.%03u  ", (unsigned)(now/1000), (unsigned)(now%1000));
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(fl, fmt, args);
+        va_end(args);
+        fclose(fl);
+    }
+    insideLog = 0;
+    return 0;
+}
+
+void dolog()
+{
+    if (upstream_socket == NULL && accepted_socket == NULL)
+        return;
+    
+    while (insideLog);
+    insideLog = 1;
+    uint64_t now = GetTickCount64();
+    if (tick0 == (uint64_t)-1)
+        tick0 = now;
+    now -= tick0;
+    FILE* fl = fopen(myLog, "ab");
+    if (fl)
+    {
+        fprintf(fl, "%5u.%03u  ", (unsigned)(now / 1000), (unsigned)(now % 1000));
+        if (accepted_socket)
+            fprintf(fl, " down:{ %s, sent:%d }", getSockInfoOut(accepted_socket->fd, accepted_socket->sent), (int)accepted_socket->sent);
+        if (upstream_socket)
+            fprintf(fl, " up:{ %s, received:%d }", getSockInfoIn(upstream_socket->fd), (int)upstream_socket->read_bytes);
+        fprintf(fl, "\n");
+        fclose(fl);
+    }
+    insideLog = 0;
+}
+
 void
 ngx_event_accept(ngx_event_t *ev)
 {
@@ -69,6 +317,7 @@ ngx_event_accept(ngx_event_t *ev)
 #else
         s = accept(lc->fd, &sa.sockaddr, &socklen);
 #endif
+        mylog("accept(%d) => %d\n", lc->fd, s);
 
         if (s == (ngx_socket_t) -1) {
             err = ngx_socket_errno;
@@ -142,6 +391,7 @@ ngx_event_accept(ngx_event_t *ev)
                               - ngx_cycle->free_connection_n;
 
         c = ngx_get_connection(s, ev->log);
+        accepted_socket = c;
 
         if (c == NULL) {
             if (ngx_close_socket(s) == -1) {
